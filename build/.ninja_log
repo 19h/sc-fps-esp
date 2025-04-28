@@ -1,0 +1,21 @@
+# ninja log v6
+2005	2086	1745799120783702157	libimgui.a	9594c0d7603602e4
+1	976	1745799118779627432	CMakeFiles/imgui.dir/imgui/imgui_tables.cpp.obj	49b36d149458864
+2	673	1745799118780627470	CMakeFiles/minhook.dir/minhook/hde/hde64.c.obj	82f834061b2a60a3
+2086	2131	1745799120908706815	/home/null/dev/srev/datacore/build/resources.o	a1f0c5e497f1cd67
+3531	3736	1745800619714537255	datacore.dll	c9caa5b0585431f3
+2086	2131	1745799120908706815	resources.o	a1f0c5e497f1cd67
+3531	3736	1745800619714537255	libdatacore.dll.a	c9caa5b0585431f3
+2	14	1745799118780627470	CMakeFiles/minhook.dir/minhook/hde/hde32.c.obj	ad5f69d75397274c
+2	712	1745799118781627507	CMakeFiles/minhook.dir/minhook/hook.c.obj	f46d05454764723e
+1	1476	1745799118779627432	CMakeFiles/imgui.dir/imgui/imgui_widgets.cpp.obj	69c7221fe76d3ae3
+2	675	1745799118780627470	CMakeFiles/minhook.dir/minhook/buffer.c.obj	46ed900bb843dff0
+3	676	1745799118781627507	CMakeFiles/minhook.dir/minhook/trampoline.c.obj	79c538da1e15a630
+755	781	1745799119533655562	bin/injector.exe	99d96992747b232b
+0	2005	1745799118778627395	CMakeFiles/imgui.dir/imgui/imgui.cpp.obj	3712eecac714263f
+4	755	1745799118782627545	CMakeFiles/injector.dir/injector.c.obj	137f69b4070f5f33
+1	1280	1745799118779627432	CMakeFiles/imgui.dir/imgui/imgui_draw.cpp.obj	d7c2429374011612
+1	3531	1745800615990457587	CMakeFiles/datacore.dir/main.cpp.obj	a28559d5f81ec285
+712	1100	1745799119490653958	libminhook.a	ffc3b39ce13c3fe1
+2	1354	1745799118780627470	CMakeFiles/imgui.dir/imgui/backends/imgui_impl_dx11.cpp.obj	2b88867784d0014c
+2	931	1745799118780627470	CMakeFiles/imgui.dir/imgui/backends/imgui_impl_win32.cpp.obj	4fc84fff7290cae9

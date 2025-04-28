@@ -1,0 +1,6 @@
+/home/null/dev/srev/datacore/build/CMakeFiles/imgui.dir
+/home/null/dev/srev/datacore/build/CMakeFiles/minhook.dir
+/home/null/dev/srev/datacore/build/CMakeFiles/datacore.dir
+/home/null/dev/srev/datacore/build/CMakeFiles/injector.dir
+/home/null/dev/srev/datacore/build/CMakeFiles/edit_cache.dir
+/home/null/dev/srev/datacore/build/CMakeFiles/rebuild_cache.dir
