@@ -812,111 +812,257 @@ public:
         std::cout << "[INFO] ImGui Shutdown Complete\n";
     }
 
-    static inline Vec3 CrossProduct(const Vec3& a, const Vec3& b)
+    // =================================================================
+    // Enhanced 3D Bounding Box Implementation
+    // =================================================================
+
+    /**
+     * Builds axis-aligned bounding box corners in world space.
+     *
+     * @param entityFeetWorld    World position of entity's feet (bottom center of the box)
+     * @param boxWidthMetres     Width of the box in meters (X dimension)
+     * @param boxDepthMetres     Depth of the box in meters (Y dimension)
+     * @param boxHeightMetres    Height of the box in meters (Z dimension)
+     * @param outWorldCorners    Output array for the 8 corner positions
+     */
+    inline void BuildAxisAlignedBoundingBoxCorners(const Vec3& entityFeetWorld,
+                                                  float        boxWidthMetres,
+                                                  float        boxDepthMetres,
+                                                  float        boxHeightMetres,
+                                                  Vec3         outWorldCorners[8])
     {
-        return Vec3{ a.y*b.z - a.z*b.y,
-                     a.z*b.x - a.x*b.z,
-                     a.x*b.y - a.y*b.x };
+        const float halfWidth  = 0.5f * boxWidthMetres;
+        const float halfDepth  = 0.5f * boxDepthMetres;
+
+        // Box feet positioned at entity's feet (Z coordinate is bottom of box)
+        const Vec3 minCorner = {
+            entityFeetWorld.x - halfWidth,
+            entityFeetWorld.y - halfDepth,
+            entityFeetWorld.z // feet position
+        };
+
+        const Vec3 maxCorner = {
+            entityFeetWorld.x + halfWidth,
+            entityFeetWorld.y + halfDepth,
+            entityFeetWorld.z + boxHeightMetres
+        };
+
+        // Define all 8 corners of the box
+        outWorldCorners[0] = {minCorner.x, minCorner.y, minCorner.z}; // front-left-bottom
+        outWorldCorners[1] = {maxCorner.x, minCorner.y, minCorner.z}; // front-right-bottom
+        outWorldCorners[2] = {maxCorner.x, maxCorner.y, minCorner.z}; // back-right-bottom
+        outWorldCorners[3] = {minCorner.x, maxCorner.y, minCorner.z}; // back-left-bottom
+        outWorldCorners[4] = {minCorner.x, minCorner.y, maxCorner.z}; // front-left-top
+        outWorldCorners[5] = {maxCorner.x, minCorner.y, maxCorner.z}; // front-right-top
+        outWorldCorners[6] = {maxCorner.x, maxCorner.y, maxCorner.z}; // back-right-top
+        outWorldCorners[7] = {minCorner.x, maxCorner.y, maxCorner.z}; // back-left-top
     }
 
-    static inline Vec3 ComputeCentrePoint(const Vec3& feetPositionWorld,
-                                          float       entityHeightMetres)
-    {
-        return Vec3{ feetPositionWorld.x,
-                     feetPositionWorld.y,
-                     feetPositionWorld.z + 0.5f * entityHeightMetres };
-    }
-
+    /**
+     * Draws a world-aligned 3D box around an entity by projecting each corner to screen space.
+     * This implementation creates an axis-aligned box in world coordinates and projects
+     * each corner to screen space, preventing unwanted tilting during camera movement.
+     *
+     * @param drawingList          ImGui draw list to render onto
+     * @param entityFeetWorld      World position of entity's feet (bottom center of the box)
+     * @param entityHeightMetres   Height of the box in meters (Z dimension)
+     * @param entityWidthMetres    Width of the box in meters (X dimension)
+     * @param entityDepthMetres    Depth of the box in meters (Y dimension)
+     * @param lineColour           Color of the box lines
+     * @param lineThickness        Thickness of the box lines
+     * @return                     True if any part of the box was drawn on screen
+     */
     bool DrawEntityBox(ImDrawList* drawingList,
-                       const Vec3& entityFeetWorld,
-                       float       entityHeightMetres,
-                       float       entityWidthMetres,
-                       float       entityDepthMetres,
-                       ImU32       lineColour,
-                       float       lineThickness)
+                                      const Vec3& entityFeetWorld,
+                                      float       entityHeightMetres,
+                                      float       entityWidthMetres,
+                                      float       entityDepthMetres,
+                                      ImU32       lineColour,
+                                      float       lineThickness)
     {
         if (!drawingList) return false;
 
-        //-----------------------------------------------
-        // 1. Build a world-aligned basis.
-        //-----------------------------------------------
-        const Vec3 worldUp { 0.0f, 0.0f, 1.0f };                // gravity axis
+        // Build eight world-space vertices
+        Vec3 worldCorners[8];
+        BuildAxisAlignedBoundingBoxCorners(entityFeetWorld,
+                                          entityWidthMetres,
+                                          entityDepthMetres,
+                                          entityHeightMetres,
+                                          worldCorners);
 
-        // Camera forward in world space (+Y in Star Citizen)
-        Vec3 cameraForwardWorld =
-            Globals::cameraRotation.RotateVector({ 0.0f, 1.0f, 0.0f });
-
-        // Project it onto the ground plane to remove pitch
-        cameraForwardWorld = Vec3{
-            cameraForwardWorld.x,
-            cameraForwardWorld.y,
-            0.0f }.Normalized();
-
-        // If we looked straight down the projection can vanish; fall back
-        if (cameraForwardWorld.Length() < 1e-3f)
-            cameraForwardWorld = Vec3{ 1.0f, 0.0f, 0.0f };      // arbitrary horizontal
-
-        Vec3 rightWorld  = CrossProduct(worldUp, cameraForwardWorld).Normalized();
-        Vec3 forwardWorld= cameraForwardWorld;                  // already horizontal
-        Vec3 upWorld     = worldUp;                             // true vertical
-
-        //-----------------------------------------------
-        // 2. Box centre and half-extents
-        //-----------------------------------------------
-        Vec3 centreWorld = ComputeCentrePoint(entityFeetWorld, entityHeightMetres);
-
-        const float halfW = 0.5f * entityWidthMetres;
-        const float halfD = 0.5f * entityDepthMetres;
-        const float halfH = 0.5f * entityHeightMetres;
-
-        //-----------------------------------------------
-        // 3. Eight corner vertices
-        //-----------------------------------------------
-        Vec3 worldCorner[8];
-
-        Vec3 bottomCentre = centreWorld - upWorld * halfH;
-
-        worldCorner[0] = bottomCentre - rightWorld*halfW - forwardWorld*halfD; // front-left
-        worldCorner[1] = bottomCentre + rightWorld*halfW - forwardWorld*halfD; // front-right
-        worldCorner[2] = bottomCentre + rightWorld*halfW + forwardWorld*halfD; // back-right
-        worldCorner[3] = bottomCentre - rightWorld*halfW + forwardWorld*halfD; // back-left
-        for (int i = 0; i < 4; ++i)
-            worldCorner[i+4] = worldCorner[i] + upWorld * entityHeightMetres;   // top face
-
-        //-----------------------------------------------
-        // 4. Project to screen
-        //-----------------------------------------------
-        Vec2  screenCorner[8];
+        // Project every vertex to screen space
+        Vec2 screenCorners[8];
         float screenW = Globals::screenResolution.width;
         float screenH = Globals::screenResolution.height;
 
-        int visible = 0;
-        for (int i = 0; i < 8; ++i)
-            if (WorldToScreen(worldCorner[i], &screenCorner[i], {screenW, screenH}) &&
-                screenCorner[i].IsValid(screenW, screenH))
-                ++visible;
-        if (!visible) return false;
+        int visibleCorners = 0;
+        for (int i = 0; i < 8; ++i) {
+            if (WorldToScreen(worldCorners[i], &screenCorners[i], {screenW, screenH}) &&
+                screenCorners[i].IsValid(screenW, screenH)) {
+                ++visibleCorners;
+            }
+        }
 
-        //-----------------------------------------------
-        // 5. Draw edges
-        //-----------------------------------------------
-        static constexpr int edgePair[12][2] = {
-            {0,1},{1,2},{2,3},{3,0},
-            {4,5},{5,6},{6,7},{7,4},
-            {0,4},{1,5},{2,6},{3,7}
+        // If no corners are visible, don't draw anything
+        if (visibleCorners == 0) {
+            return false;
+        }
+
+        // Define the 12 edges of the box (connecting pairs of vertices)
+        static constexpr int edgePairs[12][2] = {
+            {0,1},{1,2},{2,3},{3,0},  // bottom face
+            {4,5},{5,6},{6,7},{7,4},  // top face
+            {0,4},{1,5},{2,6},{3,7}   // vertical pillars
         };
 
-        for (const auto& e : edgePair)
-        {
-            int a = e[0], b = e[1];
-            if (screenCorner[a].success && screenCorner[b].success)
+        // Draw the edges
+        bool anyEdgeDrawn = false;
+        for (const auto& edge : edgePairs) {
+            int a = edge[0], b = edge[1];
+            if (screenCorners[a].success && screenCorners[b].success) {
                 drawingList->AddLine(
-                    ImVec2(screenCorner[a].x, screenCorner[a].y),
-                    ImVec2(screenCorner[b].x, screenCorner[b].y),
+                    ImVec2(screenCorners[a].x, screenCorners[a].y),
+                    ImVec2(screenCorners[b].x, screenCorners[b].y),
                     lineColour,
                     lineThickness);
+                anyEdgeDrawn = true;
+            }
         }
-        return true;
+
+        return anyEdgeDrawn;
+    }
+
+    /**
+     * Builds oriented (non-axis-aligned) bounding box corners in world space.
+     * Useful for entities that have rotation and need boxes aligned to their orientation.
+     *
+     * @param entityFeetWorld     World position of entity's feet (bottom center of the box)
+     * @param boxWidthMetres      Width of the box in meters
+     * @param boxDepthMetres      Depth of the box in meters
+     * @param boxHeightMetres     Height of the box in meters
+     * @param forwardDir          Entity's forward direction vector (normalized)
+     * @param rightDir            Entity's right direction vector (normalized)
+     * @param upDir               Up direction vector (usually world up: 0,0,1)
+     * @param outWorldCorners     Output array for the 8 corner positions
+     */
+    inline void BuildOrientedBoundingBoxCorners(const Vec3& entityFeetWorld,
+                                               float        boxWidthMetres,
+                                               float        boxDepthMetres,
+                                               float        boxHeightMetres,
+                                               const Vec3&  forwardDir,
+                                               const Vec3&  rightDir,
+                                               const Vec3&  upDir,
+                                               Vec3         outWorldCorners[8])
+    {
+        const float halfWidth = 0.5f * boxWidthMetres;
+        const float halfDepth = 0.5f * boxDepthMetres;
+
+        // Scaled direction vectors
+        const Vec3 scaledRight = rightDir.Normalized() * halfWidth;
+        const Vec3 scaledForward = forwardDir.Normalized() * halfDepth;
+        const Vec3 scaledUp = upDir.Normalized() * boxHeightMetres;
+
+        // Base corner (entity's feet position)
+        const Vec3 baseFeet = entityFeetWorld;
+
+        // Calculate bottom four corners
+        outWorldCorners[0] = baseFeet - scaledRight - scaledForward;          // front-left-bottom
+        outWorldCorners[1] = baseFeet + scaledRight - scaledForward;          // front-right-bottom
+        outWorldCorners[2] = baseFeet + scaledRight + scaledForward;          // back-right-bottom
+        outWorldCorners[3] = baseFeet - scaledRight + scaledForward;          // back-left-bottom
+
+        // Calculate top four corners by adding height vector
+        outWorldCorners[4] = outWorldCorners[0] + scaledUp;                  // front-left-top
+        outWorldCorners[5] = outWorldCorners[1] + scaledUp;                  // front-right-top
+        outWorldCorners[6] = outWorldCorners[2] + scaledUp;                  // back-right-top
+        outWorldCorners[7] = outWorldCorners[3] + scaledUp;                  // back-left-top
+    }
+
+    /**
+     * Draws an oriented 3D box around an entity based on its direction.
+     * This implementation creates a box aligned with the entity's forward/right directions.
+     *
+     * @param drawingList          ImGui draw list to render onto
+     * @param entityFeetWorld      World position of entity's feet (bottom center)
+     * @param entityHeightMetres   Height of the box in meters (Z dimension)
+     * @param entityWidthMetres    Width of the box in meters (aligned with entity's right)
+     * @param entityDepthMetres    Depth of the box in meters (aligned with entity's forward)
+     * @param entityForwardDir     Entity's forward direction vector
+     * @param lineColour           Color of the box lines
+     * @param lineThickness        Thickness of the box lines
+     * @return                     True if any part of the box was drawn on screen
+     */
+    bool DrawOrientedEntityBox(ImDrawList* drawingList,
+                                              const Vec3&   entityFeetWorld,
+                                              float         entityHeightMetres,
+                                              float         entityWidthMetres,
+                                              float         entityDepthMetres,
+                                              const Vec3&   entityForwardDir,
+                                              ImU32         lineColour,
+                                              float         lineThickness)
+    {
+        if (!drawingList) return false;
+
+        // Calculate entity's right vector from forward and world up
+        const Vec3 worldUp(0, 0, 1); // Z-up coordinate system
+        Vec3 entityRightDir = CrossProduct(worldUp, entityForwardDir).Normalized();
+
+        // Handle degenerate case (if entity is looking straight up/down)
+        if (entityRightDir.Length() < 0.001f) {
+            entityRightDir = Vec3(1, 0, 0); // Default to world X-axis
+        }
+
+        // Build eight world-space vertices with orientation
+        Vec3 worldCorners[8];
+        BuildOrientedBoundingBoxCorners(entityFeetWorld,
+                                       entityWidthMetres,
+                                       entityDepthMetres,
+                                       entityHeightMetres,
+                                       entityForwardDir,
+                                       entityRightDir,
+                                       worldUp,
+                                       worldCorners);
+
+        // Project every vertex to screen space
+        Vec2 screenCorners[8];
+        float screenW = Globals::screenResolution.width;
+        float screenH = Globals::screenResolution.height;
+
+        int visibleCorners = 0;
+        for (int i = 0; i < 8; ++i) {
+            if (WorldToScreen(worldCorners[i], &screenCorners[i], {screenW, screenH}) &&
+                screenCorners[i].IsValid(screenW, screenH)) {
+                ++visibleCorners;
+            }
+        }
+
+        // If no corners are visible, don't draw anything
+        if (visibleCorners == 0) {
+            return false;
+        }
+
+        // Define the 12 edges of the box (connecting pairs of vertices)
+        static constexpr int edgePairs[12][2] = {
+            {0,1},{1,2},{2,3},{3,0},  // bottom face
+            {4,5},{5,6},{6,7},{7,4},  // top face
+            {0,4},{1,5},{2,6},{3,7}   // vertical pillars
+        };
+
+        // Draw the edges
+        bool anyEdgeDrawn = false;
+        for (const auto& edge : edgePairs) {
+            int a = edge[0], b = edge[1];
+            if (screenCorners[a].success && screenCorners[b].success) {
+                drawingList->AddLine(
+                    ImVec2(screenCorners[a].x, screenCorners[a].y),
+                    ImVec2(screenCorners[b].x, screenCorners[b].y),
+                    lineColour,
+                    lineThickness);
+                anyEdgeDrawn = true;
+            }
+        }
+
+        return anyEdgeDrawn;
     }
 
     // --- Rendering Logic ---
