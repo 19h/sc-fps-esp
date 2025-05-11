@@ -1,24 +1,28 @@
 #define WIN32_LEAN_AND_MEAN
+//  Win32 / CRT
 #include <windows.h>
+#include <dbghelp.h>
+#include <psapi.h>
+#include <iostream>
+#include <iomanip>
+#include <mutex>
+#include <string_view>
 #include <d3d11.h>
 #include <dxgi.h>
 #include <MinHook.h>
-#include <psapi.h>
 #include <cstdint>
 #include <vector>
 #include <algorithm>
 #include <string>
 #include <list>
-#include <mutex>
 #include <sstream>
-#include <iomanip>
 #include <cmath>
-#include <iostream>
 #include <atomic>
 #include <thread>
 #include <unordered_set>
 #include <unordered_map>
 #include "imgui.h"
+#include <Zydis/Zydis.h>
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
 
@@ -165,8 +169,8 @@ static std::list<PlayerInfo> global_memory_player_info;
 
 struct ESPConfig {
     bool showPlayers = true;
-    bool showNPCs = true;
-    bool showLootables = true;
+    bool showNPCs = false;
+    bool showLootables = false;
     bool showDistance = false;
     bool showBoxes = false;
     bool showWorldPosition = false;
@@ -176,13 +180,8 @@ struct ESPConfig {
     float fieldOfViewDegrees = 90.0f;
     float maxDistance = 2000.0f; // New field for maximum entity draw distance
 
-    // Search functionality
-    char searchQuery[128] = "";
-    bool showSearchResults = false;
-    bool searchMode = false;
-
     // Settings for 3D boxes
-    bool show3DBoxes = true;         // Enable 3D entity boxes
+    bool show3DBoxes = false;         // Enable 3D entity boxes
     float boxHeight = 1.7f;          // 1.7 meters height (average person)
     float boxWidth = 0.5f;           // 50cm width
     float boxDepth = 0.2f;           // 20cm depth
@@ -194,7 +193,6 @@ struct ESPConfig {
     ImU32 npcOtherColor = IM_COL32(255, 0, 0, 255);     // Red for other NPCs
     ImU32 lootableColor = IM_COL32(0, 255, 0, 255);     // Green for lootables
     ImU32 textOutlineColor = IM_COL32(0, 0, 0, 200);    // Black outline for text
-    ImU32 searchMatchColor = IM_COL32(255, 128, 0, 255); // Orange for search matches
 };
 
 static ESPConfig config;
@@ -495,6 +493,7 @@ public:
     bool Uninitialize();
 
     void HookPresentAndResizeBuffers();
+    void VanityHooks();
     static void HookWndProc();
     void HookCEntitySystem__Update();
     static void UnhookWndProc();
@@ -816,6 +815,13 @@ public:
     // Enhanced 3D Bounding Box Implementation
     // =================================================================
 
+    static inline Vec3 CrossProduct(const Vec3& a, const Vec3& b)
+    {
+        return Vec3{ a.y*b.z - a.z*b.y,
+                     a.z*b.x - a.x*b.z,
+                     a.x*b.y - a.y*b.x };
+    }
+
     /**
      * Builds axis-aligned bounding box corners in world space.
      *
@@ -1073,9 +1079,6 @@ public:
         float screenWidth = Globals::screenResolution.width;
         float screenHeight = Globals::screenResolution.height;
 
-        // Get current time
-        float currentTime = static_cast<float>(GetTickCount64()) * 0.001f;
-
         // Display player count in top-left corner
         std::stringstream headerSS;
         headerSS << "[Players: " << Globals::playerCount.load()
@@ -1123,25 +1126,6 @@ public:
             // Skip entities beyond maximum distance (only if maxDistance > 0)
             if (config.maxDistance > 0.0f && distance > config.maxDistance) continue;
 
-            // Skip entities that don't match search query when search filtering is enabled
-            if (config.searchMode && config.showSearchResults) {
-                bool matchesSearch = false;
-                std::string entityName = entity_info.name;
-                std::string searchQuery = config.searchQuery;
-
-                // Convert both to lowercase for case-insensitive search
-                std::transform(entityName.begin(), entityName.end(), entityName.begin(),
-                    [](unsigned char c){ return std::tolower(c); });
-                std::transform(searchQuery.begin(), searchQuery.end(), searchQuery.begin(),
-                    [](unsigned char c){ return std::tolower(c); });
-
-                if (entityName.find(searchQuery) != std::string::npos) {
-                    matchesSearch = true;
-                }
-
-                if (!matchesSearch) continue; // Skip entities that don't match search
-            }
-
             // Use the raw position for rendering
             const Vec3& renderPos = entity_info.pos;
 
@@ -1155,42 +1139,19 @@ public:
                 float x = sp.x;
                 float y = sp.y;
 
-                bool isPUNpc = false;
-
-                // Draw 3D box if enabled
+                // --- 3D Box Logic ---
                 if (config.show3DBoxes) {
-                    // Determine color based on entity type
                     ImU32 boxColor;
                     if (entity_info.isPlayer) {
                         boxColor = config.playerColor;
                     } else if (entity_info.isLootable) {
                         boxColor = config.lootableColor;
-                    } else {
-                        // Check if NPC class starts with "PU_"
-                        isPUNpc = entity_info.name.find("PU_") != std::string::npos;
-                        boxColor = isPUNpc ? config.npcPUColor : config.npcOtherColor;
+                    } else { // NPC
+                        bool isPU_NPC_for_box = entity_info.name.find("PU_") != std::string::npos;
+                        boxColor = isPU_NPC_for_box ? config.npcPUColor : config.npcOtherColor;
                     }
-
-                    // If search mode is active and this entity matches, override with search match color
-                    if (config.searchMode) {
-                        std::string entityName = entity_info.name;
-                        std::string searchQuery = config.searchQuery;
-
-                        // Convert both to lowercase for case-insensitive search
-                        std::transform(entityName.begin(), entityName.end(), entityName.begin(),
-                            [](unsigned char c){ return std::tolower(c); });
-                        std::transform(searchQuery.begin(), searchQuery.end(), searchQuery.begin(),
-                            [](unsigned char c){ return std::tolower(c); });
-
-                        if (entityName.find(searchQuery) != std::string::npos) {
-                            boxColor = config.searchMatchColor;
-                        }
-                    }
-
                     // Scale thickness based on distance
                     float scaledThickness = std::max(0.5f, config.boxThickness * (1.0f - distance/2000.0f));
-
-                    // Draw the entity box
                     DrawEntityBox(
                         draw_list,
                         renderPos,
@@ -1202,21 +1163,25 @@ public:
                     );
                 }
 
-                // Create display text
-                std::stringstream textSS;
+                // --- Text, Color, and Bolding Logic ---
+                std::string displayText;
+                ImU32 textColor;
+                bool applyBold = false;
 
-                // Add name and optional distance based on entity type
                 if (entity_info.isPlayer) {
-                    // For players, show the full name
+                    std::stringstream playerTextSS;
+                    playerTextSS << entity_info.name;
                     if (config.showDistance) {
-                        textSS << entity_info.name << " [" << std::fixed << std::setprecision(1) << distance << "m]";
-                    } else {
-                        textSS << entity_info.name;
+                        playerTextSS << std::endl << std::fixed << std::setprecision(1) << distance << "M"; // "M" for meters
                     }
+                    // World position for players is omitted as per screenshot style
+                    displayText = playerTextSS.str();
+                    textColor = config.playerColor;
+                    applyBold = false; // Players are not bolded in the screenshot style
                 } else if (entity_info.isLootable) {
-                    // For lootables, process the container name according to new rules
+                    // Copy exact lootable name processing from original code
                     std::string containerName = entity_info.name;
-                    bool isRareContainer = false;
+                    bool isRareContainer = false; // Flag for bolding
 
                     // Check for rarity patterns first
                     if (containerName.find("_uncommon_") != std::string::npos) {
@@ -1230,30 +1195,21 @@ public:
                         // If no rarity pattern, check for asterisk splitting
                         size_t asteriskPos = containerName.find('*');
                         if (asteriskPos != std::string::npos && asteriskPos < containerName.length() - 1) {
-                            // Extract the substring after the first asterisk
                             containerName = containerName.substr(asteriskPos + 1);
-
-                            // If there's another asterisk, trim to it
                             size_t secondAsterisk = containerName.find('*');
                             if (secondAsterisk != std::string::npos) {
                                 containerName = containerName.substr(0, secondAsterisk);
                             }
                         } else {
                             // If neither rarity pattern nor asterisk found, use original name processing
-                            // Remove "Lootable_" prefix
                             if (containerName.find("Lootable_") == 0) {
                                 containerName = containerName.substr(9);
                             }
-
-                            // Remove "Generated_Container_" prefix
                             if (containerName.find("Generated_Container_") == 0) {
                                 containerName = containerName.substr(20);
                             }
-
-                            // Remove trailing numeric identifiers (pattern: _12312313)
                             size_t underscorePos = containerName.rfind('_');
                             if (underscorePos != std::string::npos && underscorePos < containerName.length() - 1) {
-                                // Check if all characters after underscore are digits
                                 bool allDigits = true;
                                 for (size_t i = underscorePos + 1; i < containerName.length(); i++) {
                                     if (!std::isdigit(containerName[i])) {
@@ -1261,97 +1217,80 @@ public:
                                         break;
                                     }
                                 }
-
-                                // If all digits after underscore, remove them
                                 if (allDigits) {
                                     containerName = containerName.substr(0, underscorePos);
                                 }
                             }
                         }
                     }
-
-                    // Check if container is "rare" for bold rendering later
+                    // Check if container is "rare" for bold rendering later (original logic)
                     isRareContainer = isRareContainer ||
                                      (containerName.find("rare") != std::string::npos) ||
                                      (containerName.find("Rare") != std::string::npos);
 
-                    // Format the display string
+                    applyBold = isRareContainer; // Bolding for rare lootables
+
+                    std::stringstream lootTextSS;
                     if (config.showDistance) {
-                        textSS << "Loot: " << containerName << " [" << std::fixed << std::setprecision(1) << distance << "m]";
+                        lootTextSS << "Loot: " << containerName << " [" << std::fixed << std::setprecision(1) << distance << "m]"; // "m" as original
                     } else {
-                        textSS << "Loot: " << containerName;
+                        lootTextSS << "Loot: " << containerName;
                     }
-
-                    // Set a flag to apply bold rendering later if rare
-                    if (isRareContainer) {
-                        isPUNpc = true; // Reuse the "bold" rendering flag for rare containers too
+                    if (config.showWorldPosition) { // Keep world pos for lootables if enabled
+                        lootTextSS << std::endl << "(" << std::fixed << std::setprecision(1)
+                                  << entity_info.pos.x << ", " << entity_info.pos.y << ", " << entity_info.pos.z << ")";
                     }
-                } else {
-                    // For NPCs, just show "NPC"
-                    if (config.showDistance) {
-                        textSS << "NPC [" << std::fixed << std::setprecision(1) << distance << "m]";
-                    } else {
-                        textSS << "NPC";
-                    }
-                }
-
-                // Add world position if enabled
-                if (config.showWorldPosition) {
-                    textSS << std::endl << "("
-                          << std::fixed << std::setprecision(1)
-                          << entity_info.pos.x << ", "
-                          << entity_info.pos.y << ", "
-                          << entity_info.pos.z << ")";
-                }
-
-                std::string displayText = textSS.str();
-
-                // Determine color based on entity type
-                ImU32 textColor;
-                if (entity_info.isPlayer) {
-                    textColor = config.playerColor;
-                } else if (entity_info.isLootable) {
+                    displayText = lootTextSS.str();
                     textColor = config.lootableColor;
-                } else {
-                    // Check if NPC class starts with "PU_"
-                    isPUNpc = entity_info.name.find("PU_") != std::string::npos;
-                    textColor = isPUNpc ? config.npcPUColor : config.npcOtherColor;
-                }
 
-                // Override color for search matches
-                if (config.searchMode) {
-                    std::string entityName = entity_info.name;
-                    std::string searchQuery = config.searchQuery;
-
-                    // Convert both to lowercase for case-insensitive search
-                    std::transform(entityName.begin(), entityName.end(), entityName.begin(),
-                        [](unsigned char c){ return std::tolower(c); });
-                    std::transform(searchQuery.begin(), searchQuery.end(), searchQuery.begin(),
-                        [](unsigned char c){ return std::tolower(c); });
-
-                    if (entityName.find(searchQuery) != std::string::npos) {
-                        textColor = config.searchMatchColor;
+                } else { // NPCs
+                    std::stringstream npcTextSS;
+                    if (config.showDistance) {
+                        npcTextSS << "NPC [" << std::fixed << std::setprecision(1) << distance << "m]"; // "m" as original
+                    } else {
+                        npcTextSS << "NPC";
                     }
+                     if (config.showWorldPosition) { // Keep world pos for NPCs if enabled
+                        npcTextSS << std::endl << "(" << std::fixed << std::setprecision(1)
+                                 << entity_info.pos.x << ", " << entity_info.pos.y << ", " << entity_info.pos.z << ")";
+                    }
+                    displayText = npcTextSS.str();
+
+                    bool isPU_NPC = entity_info.name.find("PU_") != std::string::npos;
+                    textColor = isPU_NPC ? config.npcPUColor : config.npcOtherColor;
+                    applyBold = isPU_NPC; // Bolding for PU_ NPCs
                 }
 
                 // Scale text based on distance and settings
                 float fontScale = std::max(0.5f, std::min(2.0f,
                     config.textScale/100.0f * (1.0f - distance/1000.0f)));
 
-                // Make PU_ NPCs bold (no direct bold support in ImGui, so we can draw it twice slightly offset)
-                isPUNpc = isPUNpc || (!entity_info.isPlayer && !entity_info.isLootable &&
-                            entity_info.name.find("PU_") != std::string::npos);
-
                 // Calculate text size for centering
                 ImVec2 textSize = ImGui::CalcTextSize(displayText.c_str());
                 textSize.x *= fontScale;
                 textSize.y *= fontScale;
 
-                // Draw text centered on entity
+                // Draw text centered on entity's screen position (x, y)
                 ImVec2 textPos(x - textSize.x * 0.5f, y - textSize.y * 0.5f);
 
-                // Draw text with potential bold effect for PU_ NPCs
-                if (isPUNpc) {
+                // Draw Chevron for players, above the text block
+                if (entity_info.isPlayer) {
+                    float chevronBaseWidth = 8.0f * fontScale;
+                    float chevronHeight = 6.0f * fontScale;
+                    float chevronGap = 2.0f * fontScale;
+
+                    ImVec2 chevronTip(x, textPos.y - chevronGap - chevronHeight); // Tip points upwards
+                    ImVec2 chevronBaseLeft(x - chevronBaseWidth * 0.5f, textPos.y - chevronGap);
+                    ImVec2 chevronBaseRight(x + chevronBaseWidth * 0.5f, textPos.y - chevronGap);
+
+                    // Basic check to avoid drawing off-screen or if text is too high
+                    if (textPos.y - chevronGap - chevronHeight > 0) {
+                         draw_list->AddTriangleFilled(chevronBaseLeft, chevronBaseRight, chevronTip, textColor);
+                    }
+                }
+
+                // Draw text with potential bold effect for PU_ NPCs or rare lootables
+                if (applyBold) {
                     // Draw text multiple times with small offsets to simulate bold
                     RenderText(draw_list, ImVec2(textPos.x-1, textPos.y), textColor, displayText.c_str(), fontScale);
                     RenderText(draw_list, ImVec2(textPos.x+1, textPos.y), textColor, displayText.c_str(), fontScale);
@@ -1362,15 +1301,19 @@ public:
                 // Draw main text
                 RenderText(draw_list, textPos, textColor, displayText.c_str(), fontScale);
 
-                // Draw 2D box if enabled
+                // --- 2D Box Logic (original) ---
                 if (config.showBoxes) {
+                    // The 2D box will be drawn around the (potentially multi-line) text block
                     float boxWidth = textSize.x * 1.2f;
                     float boxHeight = textSize.y * 1.5f;
 
+                    // The box should be centered at (x,y) like the text.
+                    // If a chevron is present for players, the box will appear lower relative to the chevron.
+                    // This matches typical ESP behavior where the box is around the text.
                     draw_list->AddRect(
                         ImVec2(x - boxWidth * 0.5f, y - boxHeight * 0.5f),
                         ImVec2(x + boxWidth * 0.5f, y + boxHeight * 0.5f),
-                        textColor,
+                        textColor, // Uses the determined textColor
                         0.0f, 0, 1.0f
                     );
                 }
@@ -1386,50 +1329,6 @@ public:
 
         // FPS counter
         ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
-        ImGui::Separator();
-
-        // Entity class search box - use a fixed layout
-        ImGui::Text("Entity Class Search:");
-
-        // Input field with calculated width to leave room for buttons
-        float windowWidth = ImGui::GetContentRegionAvail().x;
-        float searchButtonWidth = ImGui::CalcTextSize("Search").x + ImGui::GetStyle().FramePadding.x * 2.0f + 10.0f;
-        float clearButtonWidth = ImGui::CalcTextSize("Clear").x + ImGui::GetStyle().FramePadding.x * 2.0f + 10.0f;
-        float inputWidth = windowWidth - searchButtonWidth - (config.searchMode ? clearButtonWidth : 0.0f) - ImGui::GetStyle().ItemSpacing.x * 2.0f;
-
-        ImGui::SetNextItemWidth(inputWidth);
-        bool searchChanged = ImGui::InputText("##EntitySearch", config.searchQuery, sizeof(config.searchQuery),
-                                             ImGuiInputTextFlags_EnterReturnsTrue);
-
-        ImGui::SameLine(0, ImGui::GetStyle().ItemSpacing.x);
-        if (ImGui::Button("Search", ImVec2(searchButtonWidth, 0))) {
-            searchChanged = true;
-        }
-
-        if (config.searchMode) {
-            ImGui::SameLine(0, ImGui::GetStyle().ItemSpacing.x);
-            if (ImGui::Button("Clear", ImVec2(clearButtonWidth, 0))) {
-                config.searchQuery[0] = '\0';
-                config.searchMode = false;
-                config.showSearchResults = false;
-            }
-        }
-
-        if (searchChanged) {
-            // If search query is not empty, enable search mode
-            config.searchMode = (strlen(config.searchQuery) > 0);
-
-            // If search is active, automatically enable showing search results
-            if (config.searchMode) {
-                config.showSearchResults = true;
-            }
-        }
-
-        if (config.searchMode) {
-            ImGui::Checkbox("Show Only Matching Entities", &config.showSearchResults);
-            ImGui::ColorEdit4("Search Match Color", (float*)&config.searchMatchColor);
-        }
-
         ImGui::Separator();
 
         // Entity filtering options
@@ -2195,6 +2094,252 @@ void Hooking::HookCEntitySystem__Update() {
     }
 }
 
+// ********************************************************
+static const std::unordered_map<int, const char*> entityMap = {
+    {1,  "CPhysicalEntity"},
+    {2,  "CRigidEntity"},
+    {3,  "CWheeledVehicleEntity"},
+    {4,  "CRopeEntityEx"},
+    {5,  "CParticleEntity"},
+    {6,  "CArticulatedEntity"},
+    {7,  "CRopeEntity"},
+    {8,  "CSoftEntity"},
+    {9,  "CPhysArea"},
+    {10, "CSpaceshipEntity"},
+    {11, "CActorEntity"},
+    {12, "CPhysPlanetEntity"},
+    {13, "CSoftEntityEx"},
+    {14, "CHoverEntity"}
+};
+
+// ****************************************************
+
+// #if defined(_MSC_VER)
+// //  ---- MSVC / clang-cl ---------------------------------
+//   #define VCALL __vectorcall
+// #elif defined(__clang__)
+//   // clang (non-MSVC) understands the attribute directly
+//   #define VCALL __attribute__((vectorcall))
+// #elif defined(__GNUC__)
+//   // gcc has no vectorcall; ms_abi is the closest match
+//   #define VCALL __attribute__((ms_abi))
+// #else
+//   #error "Unknown compiler: please add vectorcall support"
+// #endif
+
+// using tSub_146437910 =
+//     void*** (VCALL*)(
+//         int32_t,
+//         void*,
+//         uint64_t,
+//         const char*,
+//         __m256i,
+//         __m256i,      // pass arg6 by value, not as a pointer
+//         int64_t,
+//         int32_t);
+
+// static tSub_146437910 oSub_146437910 = nullptr;
+
+// void*** VCALL hkSub_146437910(
+//         int32_t   a1,
+//         void*     a2,
+//         uint64_t  a3,
+//         const char* Source,
+//         __m256i   z0,
+//         __m256i   z1,
+//         int64_t   extra1,
+//         int32_t   extra2)
+// {
+//     if (a1 == 11)
+//         std::cout << "[HOOK] kind=11  ctx=" << a2 << '\n';
+
+//     void*** rv = oSub_146437910(
+//                      a1, a2, a3, Source,
+//                      z0, z1, extra1, extra2);
+
+//     if (a1 == 11)
+//         std::cout << "  rv=" << rv << '\n';
+//     return rv;
+// }
+
+// // 4.  Member method that installs the hook ***********************************
+// void Hooking::VanityHooks()
+// {
+//     const auto base   = reinterpret_cast<std::uintptr_t>(::GetModuleHandle(nullptr));
+//     const auto addr   = base + 0x6437910ULL;     // sub_146437910
+
+//     std::cout << "Hooking sub_146437910 at " << std::hex << addr << std::dec << '\n';
+
+//     if (HookFunction(addr,
+//                      hkSub_146437910,
+//                      oSub_146437910))
+//     {
+//         std::cout << "[SUCCESS] Hooked sub_146437910 at 0x"
+//                   << std::hex << addr << std::dec << '\n';
+//     }
+//     else
+//     {
+//         std::cout << "[ERROR] Failed to hook sub_146437910\n";
+//     }
+// }
+
+// ---------------------------------------------------------------------------
+//  Common helpers
+static void EnsureDbgHelpInitialised()
+{
+    static std::once_flag initFlag;
+    std::call_once(initFlag, []()
+    {
+        ::SymSetOptions(SYMOPT_DEFERRED_LOADS  |
+                        SYMOPT_FAIL_CRITICAL_ERRORS |
+                        SYMOPT_UNDNAME);
+        ::SymInitialize(GetCurrentProcess(), nullptr, TRUE);
+    });
+}
+
+//  Disassemble a few instructions around `pc`
+static void PrintDisassemblyAround(HANDLE hProc, DWORD64 pc,
+                                   ZydisDecoder& dec, ZydisFormatter& fmt)
+{
+    constexpr SIZE_T  WINDOW_BYTES = 0x40;          // 64-byte window
+    constexpr SIZE_T  CTXT_BYTES   = 0x20;          // decode up to ±0x20
+    BYTE              buf[WINDOW_BYTES] = {};
+    SIZE_T            got = 0;
+
+    // Read target memory.  If the page is not readable, silently skip.
+    if (!ReadProcessMemory(hProc,
+            reinterpret_cast<LPCVOID>(pc - CTXT_BYTES),
+            buf, sizeof buf, &got) || got == 0)
+    {
+        std::cerr << "        <unable to read memory>\n";
+        return;
+    }
+    // Remove unused variable
+    // const BYTE* base = buf;
+    const BYTE* p    = buf;
+    const BYTE* end  = buf + got;
+    DWORD64     ip   = pc - CTXT_BYTES;
+
+    // First pass: advance until we are within ~16 bytes before PC
+    ZydisDecodedInstruction instr;
+    while (p < end && ip + instr.length < pc - 15)
+    {
+        if (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, p, end - p,
+                                                 &instr, nullptr)))
+            p  += instr.length, ip += instr.length;
+        else
+            ++p, ++ip;          // resync aggressively
+    }
+
+    // Second pass: print 10 instructions (5 before, 5 after)
+    int printed = 0;
+    while (p < end && printed < 10 &&
+           ZYAN_SUCCESS(ZydisDecoderDecodeFull(&dec, p, end - p,
+                                                &instr, nullptr)))
+    {
+        char text[256];
+        ZydisFormatterFormatInstruction(&fmt, &instr, nullptr, 0,
+                                        text, sizeof text,
+                                        ip, nullptr);
+
+        auto old = std::cerr.flags();
+        std::cerr.copyfmt(std::cerr);
+        std::cerr << "        "
+                  << (ip == pc ? ">> " : "   ")
+                  << std::setw(16) << std::hex << ip << std::dec
+                  << "  " << text << '\n';
+        std::cerr.flags(old);
+
+        p  += instr.length;
+        ip += instr.length;
+        ++printed;
+    }
+}
+
+// ---------------------------------------------------------------- exception
+static LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ei)
+{
+    if (!ei || !ei->ExceptionRecord) return EXCEPTION_CONTINUE_SEARCH;
+
+    auto  rec = ei->ExceptionRecord;
+    if (rec->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    std::cerr << "[FATAL] Caught access violation at 0x"
+              << std::hex << rec->ExceptionAddress << std::dec << '\n'
+              << "  Attempted to "
+              << ((rec->ExceptionInformation[0] == 0) ? "read" :
+                  (rec->ExceptionInformation[0] == 1) ? "write" : "execute")
+              << " address " << std::hex << rec->ExceptionInformation[1]
+              << std::dec << "\n";
+
+    // ------------------ back-trace
+    EnsureDbgHelpInitialised();
+
+    void*  stack[64];
+    USHORT frames = ::CaptureStackBackTrace(0, _countof(stack), stack, nullptr);
+
+    std::cerr << "Backtrace (" << frames << " frames):\n";
+
+    HANDLE         hProc = GetCurrentProcess();
+    ZydisDecoder   decoder;
+    ZydisFormatter fmt;
+
+    // Initialize Zydis decoder with correct machine mode and address width
+    ZydisDecoderInit(&decoder,
+                     ZYDIS_MACHINE_MODE_LONG_64,
+                     ZYDIS_STACK_WIDTH_64);
+    ZydisFormatterInit(&fmt, ZYDIS_FORMATTER_STYLE_INTEL);
+
+    for (USHORT i = 0; i < frames; ++i)
+    {
+        DWORD64 addr = reinterpret_cast<DWORD64>(stack[i]);
+
+        // --- module name
+        HMODULE hMod = nullptr;
+        char    modBase[MAX_PATH] = "<unknown>";
+        if (::GetModuleHandleExA(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCSTR>(addr), &hMod) && hMod)
+        {
+            if (::GetModuleFileNameA(hMod, modBase, sizeof modBase))
+                if (char* p = strrchr(modBase, '\\')) strcpy(modBase, p + 1);
+        }
+
+        // --- symbol name
+        char                symBuf[sizeof(SYMBOL_INFO) + 256] = {};
+        PSYMBOL_INFO        sym = reinterpret_cast<PSYMBOL_INFO>(symBuf);
+        DWORD64             disp = 0;
+        bool haveSym = false;
+
+        sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+        sym->MaxNameLen   = 255;
+        if (::SymFromAddr(hProc, addr, &disp, sym))
+            haveSym = true;
+
+        auto old = std::cerr.flags();
+        std::cerr.copyfmt(std::cerr);
+        std::cerr << "  [" << std::setw(2) << i << "] "
+                  << modBase << '!';
+        if (haveSym)
+            std::cerr << sym->Name << "+0x" << std::hex << disp << std::dec;
+        else
+            std::cerr << "0x" << std::hex << addr << std::dec;
+        std::cerr << '\n';
+        std::cerr.flags(old);
+
+        // --- disassembly context
+        PrintDisassemblyAround(hProc, addr, decoder, fmt);
+    }
+
+    //MessageBoxA(nullptr,
+    //            "Caught access violation (segfault).\nSee console for details.",
+    //            "Fatal Error", MB_OK | MB_ICONERROR);
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 // =================================================================
 // Main Entry Point
 // =================================================================
@@ -2211,12 +2356,15 @@ DWORD WINAPI MainThread(LPVOID lp_reserved) {
         std::cout << "[INFO] Console streams redirected.\n";
     }
 
+    void* handler = AddVectoredExceptionHandler(1, VectoredHandler);
+
     std::cout << "[INFO] ESP System Initialized\n";
 
     // Initialize hooking
     Hooking hooking;
     if (!hooking.Initialize()) {
         std::cerr << "[FATAL] Failed to initialize MinHook!\n";
+        if (handler) RemoveVectoredExceptionHandler(handler);
         FreeLibraryAndExitThread((HMODULE)lp_reserved, 1);
         return 1;
     }
@@ -2232,6 +2380,8 @@ DWORD WINAPI MainThread(LPVOID lp_reserved) {
     // Hook DirectX functions for rendering
     hooking.HookPresentAndResizeBuffers();
 
+    //hooking.VanityHooks();
+
     // Hook game function to collect player information
     hooking.HookCEntitySystem__Update();
 
@@ -2245,6 +2395,9 @@ DWORD WINAPI MainThread(LPVOID lp_reserved) {
 
     // Clean up hooks before exiting
     hooking.Uninitialize();
+
+    // Remove vectored exception handler
+    if (handler) RemoveVectoredExceptionHandler(handler);
 
     // Cleanup console
     if (fp_in) fclose(fp_in);
